@@ -1,5 +1,6 @@
 ﻿Imports System.Security.Cryptography
 Imports System.Windows
+Imports COPiPi_4._8.MemoForm
 
 '===========================================================
 ' ★ COPiPi メイン管理フォーム
@@ -34,6 +35,14 @@ Public Class DataViewForm
     Private menuLeft As ContextMenuStrip
     Private menuRight As ContextMenuStrip
 
+    ' 付箋並べ直し、移動用のフラグ
+    Private pendingColorIndex As Integer = -1
+    Private pendingMode As String = ""   ' "sort" or "move"
+
+    ' ★ 付箋ウィンドウを ID で管理する辞書
+    Private memoForms As New Dictionary(Of String, MemoForm)
+
+
 
     '===========================================================
     ' ★ Init：COPiPi 起動時の初期化処理
@@ -46,8 +55,24 @@ Public Class DataViewForm
     '===========================================================
     Public Sub Init()
 
+        ' ★ 色テーマ読み込み（なければ自動生成）
+        ColorThemeManager.LoadThemes()
+        ' color.xml が壊れていたら初期テーマを復活
+        If ColorThemeManager.Themes.Count = 0 Then
+            ColorThemeManager.LoadThemes()
+        End If
+
+        ' メモデータ読み込み（XML → DataTable）
+        mainData = readData()
+
+        ' ★ MemoColor の整合性チェック
+        FixMemoColorIndexes()
+
         ' タスクトレイメニュー構築
         BuildMenus()
+
+        ' 表示／非表示メニュー構築
+        BuildShowCheckMenu()
 
         ' 設定読み込み（ファイル添付モード）
         FileAttachMode = LoadSetting("FileAttachMode")
@@ -58,8 +83,6 @@ Public Class DataViewForm
         Dim fileDir As String = IO.Path.Combine(baseDir, "file")
         If Not IO.Directory.Exists(fileDir) Then IO.Directory.CreateDirectory(fileDir)
 
-        ' メモデータ読み込み（XML → DataTable）
-        mainData = readData()
 
         ' タスクトレイアイコンを表示
         NotifyIcon1.Visible = True
@@ -67,89 +90,138 @@ Public Class DataViewForm
         ' VisibleFlag=True のメモだけ生成して表示
         For Each row As DataRow In mainData.Rows
             If CBool(row("VisibleFlag")) Then
-                MemoBuild(mainData.Rows.IndexOf(row))
+                MemoBuild(row)
             End If
         Next
 
-        ' 表示／非表示メニュー構築
-        BuildShowCheckMenu()
+        AddHandler Microsoft.Win32.SystemEvents.SessionSwitch, AddressOf OnSessionSwitch
 
         ' リマインダー確認（期限到達メモを通知）
         CheckAllReminders()
     End Sub
 
-
     '===========================================================
-    ' ★ BuildMenus：タスクトレイの左／右クリックメニュー構築
+    ' ★ BuildMenus：左／右クリックメニューを完全再構築
+    '   - 新規作成メニュー（色テーマ）
+    '   - 表示／非表示メニュー（色テーマ）
+    '   - 色ごと整列／色ごと移動（右メニュー）
+    '   - 設定／終了などの固定メニュー
     '===========================================================
-    Private Sub BuildMenus()
+    Public Sub BuildMenus()
 
-        '-------------------------------
+        '---------------------------------------------
         ' ★ 左クリックメニュー
-        '-------------------------------
+        '---------------------------------------------
         menuLeft = New ContextMenuStrip()
 
-        ' 新規作成（色別）
-        Dim newMenu As New ToolStripMenuItem("新規作成")
+        ' 新規作成メニュー（色テーマ）
+        BuildColorMenu()
 
-        Dim newYellow = New ToolStripMenuItem("Yellow")
-        AddHandler newYellow.Click, AddressOf YellowToolStripMenuItem_Click
-        newMenu.DropDownItems.Add(newYellow)
-
-        Dim newPink = New ToolStripMenuItem("Pink")
-        AddHandler newPink.Click, AddressOf PinkToolStripMenuItem_Click
-        newMenu.DropDownItems.Add(newPink)
-
-        Dim newGreen = New ToolStripMenuItem("Green")
-        AddHandler newGreen.Click, AddressOf GreenToolStripMenuItem_Click
-        newMenu.DropDownItems.Add(newGreen)
-
-        Dim newBlue = New ToolStripMenuItem("Blue")
-        AddHandler newBlue.Click, AddressOf BlueToolStripMenuItem_Click
-        newMenu.DropDownItems.Add(newBlue)
-
-        Dim newOrange = New ToolStripMenuItem("Orange")
-        AddHandler newOrange.Click, AddressOf OrangeToolStripMenuItem_Click
-        newMenu.DropDownItems.Add(newOrange)
-
-        Dim newGray = New ToolStripMenuItem("Gray")
-        AddHandler newGray.Click, AddressOf GrayToolStripMenuItem_Click
-        newMenu.DropDownItems.Add(newGray)
-
-        menuLeft.Items.Add(newMenu)
-
-        ' 表示／非表示メニュー（後で動的に構築）
+        ' 表示／非表示メニュー（後で中身を構築）
         Dim showMenu As New ToolStripMenuItem("表示／非表示")
         showMenu.Name = "ShowCheckMenu"
         menuLeft.Items.Add(showMenu)
+
+        ' 一覧表示
+        Dim SearchFormShow As New ToolStripMenuItem("検索")
+        AddHandler SearchFormShow.Click,
+        Sub()
+            Dim f As New SearchForm(mainData, Me)
+            f.Show()
+        End Sub
+        menuLeft.Items.Add(SearchFormShow)
 
         ' メニューを閉じる
         Dim hideMenu As New ToolStripMenuItem("メニューを閉じる")
         AddHandler hideMenu.Click, Sub() CloseAllMenus()
         menuLeft.Items.Add(hideMenu)
-
-
-        '-------------------------------
+        '---------------------------------------------
         ' ★ 右クリックメニュー
-        '-------------------------------
+        '---------------------------------------------
         menuRight = New ContextMenuStrip()
 
+        '=============================================
+        ' ★ 色ごと整列
+        '=============================================
+        Dim sortByColorMenu As New ToolStripMenuItem("色ごと整列")
+        sortByColorMenu.Name = "SortByColorMenu"
+
+        For Each theme In ColorThemeManager.Themes
+
+            Dim colorIndex = theme.Index
+
+            ' ★ mainData にこの色のメモが存在するか？
+            Dim rows = mainData.Rows.Cast(Of DataRow)().
+               Where(Function(r) CInt(r("MemoColor")) = colorIndex)
+
+            If rows.Any() Then
+                Dim item As New ToolStripMenuItem(theme.Name)
+                item.Tag = colorIndex
+                AddHandler item.Click, AddressOf SortColorMenu_Click
+                sortByColorMenu.DropDownItems.Add(item)
+            End If
+
+        Next
+
+        menuRight.Items.Add(sortByColorMenu)
+
+
+        '=============================================
+        ' ★ 色ごと移動
+        '=============================================
+        Dim moveByColorMenu As New ToolStripMenuItem("色ごと移動")
+        moveByColorMenu.Name = "MoveByColorMenu"
+
+        For Each theme In ColorThemeManager.Themes
+
+            Dim colorIndex = theme.Index
+
+            Dim rows = mainData.Rows.Cast(Of DataRow)().
+               Where(Function(r) CInt(r("MemoColor")) = colorIndex)
+
+            If rows.Any() Then
+                Dim item As New ToolStripMenuItem(theme.Name)
+                item.Tag = colorIndex
+                AddHandler item.Click, AddressOf MoveColorMenu_Click
+                moveByColorMenu.DropDownItems.Add(item)
+            End If
+
+        Next
+
+        menuRight.Items.Add(moveByColorMenu)
+
+
+        ' 全付箋整列
         Dim sortMenu = New ToolStripMenuItem("全付箋整列")
-        AddHandler sortMenu.Click, AddressOf 並べ直しToolStripMenuItem_Click
+        AddHandler sortMenu.Click,
+    Sub()
+        pendingMode = "sortAll"
+        ShowOverlayOnAllScreens()
+    End Sub
         menuRight.Items.Add(sortMenu)
 
+        ' 通知予定確認
         Dim remindCheckMenu = New ToolStripMenuItem("通知予定確認")
         AddHandler remindCheckMenu.Click, AddressOf 通知確認ToolStripMenuItem_Click
         menuRight.Items.Add(remindCheckMenu)
 
+        ' 設定
         Dim settingsMenu = New ToolStripMenuItem("設定")
         AddHandler settingsMenu.Click, AddressOf 設定ToolStripMenuItem_Click
         menuRight.Items.Add(settingsMenu)
 
+        ' 終了
         Dim exitMenu As New ToolStripMenuItem("終了")
         AddHandler exitMenu.Click, AddressOf 終了ToolStripMenuItem_Click
         menuRight.Items.Add(exitMenu)
+
+        '---------------------------------------------
+        ' ★ 表示／非表示メニューの中身を構築
+        '---------------------------------------------
+        BuildShowCheckMenu()
+
     End Sub
+
 
 
     '===========================================================
@@ -216,18 +288,14 @@ Public Class DataViewForm
     '===========================================================
     Private Sub NotifyIcon1_MouseDown(sender As Object, e As MouseEventArgs) Handles NotifyIcon1.MouseDown
 
-        ' 既存メニューを必ず閉じる（重複表示防止）
         CloseAllMenus()
 
-        Dim pos = PointToClient(Cursor.Position)
-
         If e.Button = MouseButtons.Left Then
-            menuLeft.Show(Me, pos)
+            menuLeft.Show(Cursor.Position)
         Else
-            menuRight.Show(Me, pos)
+            menuRight.Show(Cursor.Position)
         End If
     End Sub
-
 
     '===========================================================
     ' ★ 全メニューを閉じる（左／右）
@@ -237,6 +305,7 @@ Public Class DataViewForm
         If menuRight IsNot Nothing Then menuRight.Hide()
     End Sub
 
+
     '===========================================================
     ' ★ タスクトレイアイコンのダブルクリック
     '   - メニューが開いていたら閉じるだけ
@@ -245,32 +314,101 @@ Public Class DataViewForm
         CloseAllMenus()
     End Sub
 
+    '===========================================================
+    ' ★ 新規作成メニュー（色テーマから動的生成）
+    '===========================================================
+    Private Sub BuildColorMenu()
+
+        Dim newMenu As New ToolStripMenuItem("新規作成")
+        newMenu.Name = "ColorMenu"
+
+        For Each theme In ColorThemeManager.Themes
+
+            Dim item As New ToolStripMenuItem(theme.Name)
+            item.Tag = theme.Index
+
+            AddHandler item.Click,
+            Sub(sender As Object, e As EventArgs)
+                Dim idx As Integer = CInt(CType(sender, ToolStripMenuItem).Tag)
+                CreateNewMemo(idx)
+            End Sub
+
+            newMenu.DropDownItems.Add(item)
+        Next
+
+        menuLeft.Items.Add(newMenu)
+    End Sub
 
     '===========================================================
-    ' ★ 新規メモ作成（色別メニュー）
+    ' ★ BuildShowCheckMenu：表示／非表示メニューを動的生成
+    '   - テーマ XML の色一覧をもとに親メニュー（色名）を構築
+    '   - 各色に属するメモを抽出し、個別メモの子メニューを生成
+    '   - VisibleFlag に応じてチェック状態を反映
+    '   - 色名・メモ名は DataTable と完全同期
     '===========================================================
-    Private Sub YellowToolStripMenuItem_Click(sender As Object, e As EventArgs)
-        CreateNewMemo(0)
+
+    Public Sub BuildShowCheckMenu()
+
+        Dim showMenu As ToolStripMenuItem =
+        CType(menuLeft.Items("ShowCheckMenu"), ToolStripMenuItem)
+
+        showMenu.DropDownItems.Clear()
+
+        ' ★ テーマ XML の色一覧を使う
+        For Each theme In ColorThemeManager.Themes
+
+            Dim colorIndex = theme.Index
+            Dim colorName = theme.Name
+
+            ' ★ 該当色のメモを抽出（従来通り）
+            Dim rows = mainData.Rows.Cast(Of DataRow)().
+            Where(Function(r) CInt(r("MemoColor")) = colorIndex)
+
+            If rows.Any() Then
+
+                ' ★ 親メニュー（色名）
+                Dim colorItem As New ToolStripMenuItem(colorName)
+                colorItem.Tag = colorIndex
+
+                ' ★ 色のメモが全部 VisibleFlag=True ならチェック
+                colorItem.Checked = rows.All(Function(r) CBool(r("VisibleFlag")))
+
+                AddHandler colorItem.Click, AddressOf ShowColorMenu_Click
+
+                ' ★ 子メニュー（個別メモ）
+                For Each r In rows
+                    Dim memoItem As New ToolStripMenuItem(r("title").ToString())
+                    memoItem.Tag = r("id").ToString()
+                    memoItem.Checked = CBool(r("VisibleFlag"))
+                    AddHandler memoItem.Click, AddressOf ShowSingleMemo_Click
+                    colorItem.DropDownItems.Add(memoItem)
+                Next
+
+                showMenu.DropDownItems.Add(colorItem)
+            End If
+        Next
+
     End Sub
 
-    Private Sub PinkToolStripMenuItem_Click(sender As Object, e As EventArgs)
-        CreateNewMemo(1)
-    End Sub
 
-    Private Sub GreenToolStripMenuItem_Click(sender As Object, e As EventArgs)
-        CreateNewMemo(2)
-    End Sub
+    '===========================================================
+    ' ★ ApplyVisibilityToMemos：テーマの Visible 設定を既存メモに反映
+    '   - OwnedForms（表示中の MemoForm）を走査
+    '   - MemoColor から対応するテーマを取得
+    '   - theme.Visible に応じて各 MemoForm の Visible を更新
+    '   - 色テーマの「表示／非表示」設定と UI を同期させる
+    '===========================================================
+    Private Sub ApplyVisibilityToMemos()
 
-    Private Sub BlueToolStripMenuItem_Click(sender As Object, e As EventArgs)
-        CreateNewMemo(3)
-    End Sub
 
-    Private Sub OrangeToolStripMenuItem_Click(sender As Object, e As EventArgs)
-        CreateNewMemo(4)
-    End Sub
+        For Each f As MemoForm In Me.OwnedForms
 
-    Private Sub GrayToolStripMenuItem_Click(sender As Object, e As EventArgs)
-        CreateNewMemo(5)
+            Dim idx As Integer = CInt(f.MyRow("MemoColor"))
+            Dim theme = ColorThemeManager.GetThemeByIndex(idx)
+
+            f.Visible = theme.Visible
+        Next
+
     End Sub
 
 
@@ -315,164 +453,169 @@ Public Class DataViewForm
         ' XML 保存
         mainData.WriteXml(dataFilename)
 
-        ' 実際の MemoForm を生成して表示
-        MemoBuild(mainData.Rows.Count - 1)
+        ' ★ 新仕様：DataRow を直接渡す
+        Dim mf As MemoForm = MemoBuild(row)
 
         ' 表示メニュー更新
         BuildShowCheckMenu()
     End Sub
 
 
-
     '===========================================================
-    ' ★ FindSafePosition：新規メモの安全な位置を探索する
+    ' ★ FindSafePosition（完全多画面対応版）
+    '   - 全ディスプレイの結合領域を使って安全な位置を探索
     '   - 既存 MemoForm と重ならない位置を探す
-    '   - Y をずらしながら探索
-    '   - 画面下に来たら X を右にずらす
+    '   - 画面外に出ないよう minX/maxX/minY/maxY で補正
     '===========================================================
     Private Function FindSafePosition() As Point
 
         Dim startX As Integer = 200
         Dim startY As Integer = 100
-        Dim offset As Integer = 30
+        Dim offset As Integer = 22
 
         Dim x As Integer = startX
         Dim y As Integer = startY
 
-        Dim screenHeight = Screen.PrimaryScreen.WorkingArea.Height
-        Dim screenWidth = Screen.PrimaryScreen.WorkingArea.Width
+        '===========================================================
+        ' ★ 全ディスプレイの結合領域を取得
+        '===========================================================
+        Dim screens = Screen.AllScreens
+
+        Dim minX As Integer = screens.Min(Function(s) s.WorkingArea.Left)
+        Dim maxX As Integer = screens.Max(Function(s) s.WorkingArea.Right)
+        Dim minY As Integer = screens.Min(Function(s) s.WorkingArea.Top)
+        Dim maxY As Integer = screens.Max(Function(s) s.WorkingArea.Bottom)
+
+        '===========================================================
+        ' ★ メモサイズ（幅・高さ）取得
+        '===========================================================
+        Dim p = GetMemoSizeProfile()
+        Dim memoW As Integer = p.Width
+        Dim memoH As Integer = p.OriginalHeight
 
         While True
 
-            ' 既存メモと重なるかチェック
-            Dim overlap = Application.OpenForms.Cast(Of Form).
-                Where(Function(f) TypeOf f Is MemoForm).
-                Any(Function(f)
-                        Dim mf = CType(f, MemoForm)
-                        Dim rect1 As New Rectangle(x, y, 300, 200)
-                        Dim rect2 As New Rectangle(mf.Left, mf.Top, mf.Width, mf.Height)
-                        Return rect1.IntersectsWith(rect2)
-                    End Function)
+            '===========================================================
+            ' ★ 画面外に出ないよう補正
+            '===========================================================
+            If x < minX Then x = minX + 10
+            If x + memoW > maxX Then x = maxX - memoW - 10
 
-            ' 重ならなければこの位置を採用
+            If y < minY Then y = minY + 10
+            If y + memoH > maxY Then
+                ' 下端に来たら X を右へ、Y を初期化
+                x += memoW + 20
+                y = startY
+            End If
+
+            '===========================================================
+            ' ★ 既存メモと重なるかチェック
+            '===========================================================
+            Dim overlap = memoForms.Values.Any(Function(mf)
+                                                   Dim rect1 As New Rectangle(x, y, memoW, memoH)
+                                                   Dim rect2 As New Rectangle(mf.Left, mf.Top, mf.Width, mf.Height)
+                                                   Return rect1.IntersectsWith(rect2)
+                                               End Function)
+
+            '===========================================================
+            ' ★ 重ならなければこの位置を採用
+            '===========================================================
             If Not overlap Then
                 Return New Point(x, y)
             End If
 
-            ' 重なっていたら Y をずらす
+            '===========================================================
+            ' ★ 重なっていたら Y をずらす
+            '===========================================================
             y += offset
 
-            ' 画面下に来たら X を右へ、Y を初期化
-            If y + 200 > screenHeight Then
-                x += 320
-                y = startY
-            End If
-
-            ' 画面右端まで来たら左に戻す（安全策）
-            If x + 300 > screenWidth Then
-                x = startX
-            End If
         End While
 
     End Function
 
+
     '===========================================================
     ' ★ MemoForm 生成（MyRow を渡す）
-    '   - DataRow の内容を UI に反映して MemoForm を生成
-    '   - 表示位置・色・タイトルなどを初期化
     '===========================================================
-    Private Sub MemoBuild(i As Integer)
+    Public Function MemoBuild(row As DataRow) As MemoForm
 
-        Dim row As DataRow = mainData.Rows(i)
+        Dim memoId As String = row("id").ToString()
 
-        ' MemoForm に DataRow と親フォーム（Me）を渡す
-        Dim objForm As New MemoForm(row, Me)
+        ' ★ 先に生成
+        Dim mf As New MemoForm(row, Me)
+        mf.TopMost = CBool(row("TopMostFlag"))
 
-        ' メモの基本情報を UI に反映
-        objForm.IDLabel.Text = row("id").ToString()
-        objForm.Text = row("title").ToString()          ' フォームタイトルバー
-        objForm.TitleText.Text = row("title").ToString() ' タイトル編集欄
-        objForm.MemoText.Text = row("text").ToString()   ' 本文
+        ' ★ 先に辞書登録（これが重要）
+        memoForms(memoId) = mf
 
-        ' メモの色設定（MemoColor に応じて背景色を決定）
-        Select Case CInt(row("MemoColor"))
-            Case 0 : objForm.BackColor = Color.FromArgb(255, 240, 120)
-            Case 1 : objForm.BackColor = Color.FromArgb(255, 160, 200)
-            Case 2 : objForm.BackColor = Color.FromArgb(160, 240, 160)
-            Case 3 : objForm.BackColor = Color.FromArgb(140, 180, 255)
-            Case 4 : objForm.BackColor = Color.FromArgb(255, 200, 120)
-            Case 5 : objForm.BackColor = Color.FromArgb(200, 200, 200)
-        End Select
+        AddHandler mf.FormClosed,
+        Sub()
+            RemoveMemoForm(memoId)
+        End Sub
 
-        ' 表示位置を DataRow の x,y から復元
-        objForm.StartPosition = FormStartPosition.Manual
-        objForm.Location = New Point(CInt(row("x")), CInt(row("y")))
+        ' ★ 最後に表示
+        mf.Show()
 
-        ' メモを表示
-        objForm.Show()
+        Return mf
+    End Function
 
-    End Sub
 
 
     '===========================================================
-    ' ★ 表示メニュー構築（色別 → 個別メモ）
-    '   - mainData を LINQ で色別に分類
-    '   - VisibleFlag に応じてチェック状態を設定
-    '   - メニューを動的に生成する
+    ' ★ OpenMemo：辞書方式で付箋を開く（重複生成しない）
     '===========================================================
-    Private Sub BuildShowCheckMenu()
+    Public Function OpenMemo(memoId As String) As MemoForm
 
-        ' 左クリックメニューの「表示／非表示」を取得
-        Dim showMenu As ToolStripMenuItem = CType(menuLeft.Items("ShowCheckMenu"), ToolStripMenuItem)
-        showMenu.DropDownItems.Clear()
+        ' 既に開いている？
+        If memoForms.ContainsKey(memoId) Then
+            Dim mf = memoForms(memoId)
+            mf.RefreshUI()
+            mf.Show()
+            mf.BringToFront()
+            mf.Activate()
+            Return mf
+        End If
 
-        ' 色番号 → 色名の対応表
-        Dim colorNames As New Dictionary(Of Integer, String) From {
-        {0, "Yellow"}, {1, "Pink"}, {2, "Green"},
-        {3, "Blue"}, {4, "Orange"}, {5, "Gray"}
-    }
+        ' 新規生成
+        Dim row = mainData.Rows.Cast(Of DataRow)().
+        First(Function(r) r("id").ToString() = memoId)
 
-        ' 色ごとにメニューを構築
-        For Each kv In colorNames
+        Dim newForm As MemoForm = MemoBuild(row)
+        Return newForm
 
-            Dim colorNumber = kv.Key
-            Dim colorName = kv.Value
+    End Function
 
-            ' 該当色のメモを抽出
-            Dim rows = mainData.Rows.Cast(Of DataRow)().
-            Where(Function(r) CInt(r("MemoColor")) = colorNumber)
 
-            If rows.Any() Then
 
-                ' 色メニュー（親）
-                Dim colorItem As New ToolStripMenuItem(colorName)
-                colorItem.Tag = colorNumber
 
-                ' 色のメモが全て VisibleFlag=True のときだけチェック
-                colorItem.Checked = rows.All(Function(r) CBool(r("VisibleFlag")))
+    '===========================================================
+    ' ★ タイトル変更時にメニュー更新
+    '===========================================================
+    Public Sub RefreshMemoTitleInMenu(memoId As String, newTitle As String)
 
-                AddHandler colorItem.Click, AddressOf ShowColorMenu_Click
+        Dim showMenu As ToolStripMenuItem =
+        CType(menuLeft.Items("ShowCheckMenu"), ToolStripMenuItem)
 
-                ' 個別メモ（子メニュー）
-                For Each r In rows
-                    Dim memoItem As New ToolStripMenuItem(r("title").ToString())
-                    memoItem.Tag = r("id").ToString()
-                    memoItem.Checked = CBool(r("VisibleFlag"))
-                    AddHandler memoItem.Click, AddressOf ShowSingleMemo_Click
-                    colorItem.DropDownItems.Add(memoItem)
-                Next
+        If showMenu Is Nothing Then Exit Sub
 
-                showMenu.DropDownItems.Add(colorItem)
-            End If
+        For Each colorItem As ToolStripMenuItem In showMenu.DropDownItems
+            For Each memoItem As ToolStripMenuItem In colorItem.DropDownItems
+                If memoItem.Tag.ToString() = memoId Then
+                    memoItem.Text = newTitle
+                    Exit Sub
+                End If
+            Next
         Next
     End Sub
-
 
     '===========================================================
     ' ★ 色メニュークリック（色のメモを一括表示／非表示）
     '   - VisibleFlag を一括更新
-    '   - 既存フォームは Visible を変更
-    '   - 無い場合は新規生成
+    '   - 辞書方式で既存フォームを再利用
+    '   - 無い場合は新規生成して辞書に登録
+    '===========================================================
+    '===========================================================
+    ' ★ 色メニュークリック（辞書方式対応）
     '===========================================================
     Private Sub ShowColorMenu_Click(sender As Object, e As EventArgs)
 
@@ -482,33 +625,36 @@ Public Class DataViewForm
         ' チェック状態を反転
         item.Checked = Not item.Checked
 
-        ' mainData の VisibleFlag を一括更新
+        ' VisibleFlag を一括更新
         For Each r In mainData.Rows.Cast(Of DataRow)().
         Where(Function(row) CInt(row("MemoColor")) = colorNumber)
 
             r("VisibleFlag") = item.Checked
         Next
 
-        ' フォーム更新（存在しない場合は生成）
+        ' 辞書方式でフォーム更新
         For Each row In mainData.Rows.Cast(Of DataRow)().
         Where(Function(r) CInt(r("MemoColor")) = colorNumber)
 
-            Dim exists = Application.OpenForms.Cast(Of Form).
-            Any(Function(f) TypeOf f Is MemoForm AndAlso CType(f, MemoForm).MyRow Is row)
+            Dim memoId As String = row("id").ToString()
 
-            If exists Then
-                ' 既存フォームの表示状態を変更
-                Dim mf = Application.OpenForms.Cast(Of Form).
-                First(Function(f) TypeOf f Is MemoForm AndAlso CType(f, MemoForm).MyRow Is row)
-                mf.Visible = item.Checked
+            If memoForms.ContainsKey(memoId) Then
+
+                Dim mf = memoForms(memoId)
+
+                If item.Checked Then
+                    mf.RefreshUI()
+                    mf.Visible = True
+                Else
+                    mf.Close()
+                End If
 
             ElseIf item.Checked Then
-                ' 非表示 → 表示に変更された場合は新規生成
-                MemoBuild(mainData.Rows.IndexOf(row))
+                MemoBuild(row)
             End If
         Next
 
-        ' 子メニュー（個別メモ）のチェック状態を同期
+        ' 子メニューのチェック状態を同期
         For Each memoItem As ToolStripMenuItem In item.DropDownItems
             memoItem.Checked = item.Checked
         Next
@@ -519,11 +665,266 @@ Public Class DataViewForm
     End Sub
 
 
+
     '===========================================================
-    ' ★ 個別メモ表示切替
+    ' ★ 色ごとの整列（色のメモを一括で整列）
+    '===========================================================
+    Private Sub SortColorMenu_Click(sender As Object, e As EventArgs)
+        pendingColorIndex = CInt(CType(sender, ToolStripMenuItem).Tag)
+        pendingMode = "sort"
+
+        ShowOverlayOnAllScreens()
+    End Sub
+
+
+    '===========================================================
+    ' ★ 色ごとの移動（色のメモを一括で移動）
+    '===========================================================
+
+    Private Sub MoveColorMenu_Click(sender As Object, e As EventArgs)
+        pendingColorIndex = CInt(CType(sender, ToolStripMenuItem).Tag)
+        pendingMode = "move"
+
+        ShowOverlayOnAllScreens()
+    End Sub
+
+    Private Sub ShowOverlayOnAllScreens()
+
+        Dim screens = Screen.AllScreens
+
+        For Each s In screens
+            Dim ov As New OverlayForm(s.Bounds)
+            ov.Callback = AddressOf OverlayClickHandler
+            ov.Show()
+        Next
+
+    End Sub
+
+
+
+    '===========================================================
+    ' ★ OverlayClickHandler：オーバーレイクリック後の処理振り分け
+    '   - pendingMode に応じて「色ごと整列」または「色ごと移動」を実行
+    '   - OverlayForm から渡されたクリック座標を起点に処理
+    '   - 処理完了後は pendingMode / pendingColorIndex を必ずリセット
+    '===========================================================
+    Private Sub OverlayClickHandler(pt As Point)
+
+        If pendingMode = "sort" Then
+            SortMemosByColor(pendingColorIndex, pt)
+
+        ElseIf pendingMode = "move" Then
+            MoveMemosByColor(pendingColorIndex, pt)
+
+        ElseIf pendingMode = "sortAll" Then
+            SortAllMemos(pt)
+        End If
+
+        pendingMode = ""
+        pendingColorIndex = -1
+        Me.Focus()
+    End Sub
+
+
+    '===========================================================
+    ' ★ SortMemosByColor：色ごとに整列
+    '   - カーソル位置を起点に縦方向に並べる
+    '===========================================================
+    Public Sub SortMemosByColor(colorIndex As Integer, startPoint As Point)
+
+        Dim currentY As Integer = startPoint.Y
+
+        '===========================================================
+        ' ★ 全ディスプレイの結合領域を取得
+        '===========================================================
+        Dim allScreens = Screen.AllScreens
+
+        Dim minX As Integer = allScreens.Min(Function(s) s.WorkingArea.Left)
+        Dim maxX As Integer = allScreens.Max(Function(s) s.WorkingArea.Right)
+        Dim minY As Integer = allScreens.Min(Function(s) s.WorkingArea.Top)
+        Dim maxY As Integer = allScreens.Max(Function(s) s.WorkingArea.Bottom)
+
+        '===========================================================
+        ' ★ 対象色かつ VisibleFlag=True のメモを抽出
+        '===========================================================
+        Dim rows = mainData.Rows.Cast(Of DataRow)().
+        Where(Function(r) CInt(r("MemoColor")) = colorIndex AndAlso CBool(r("VisibleFlag")))
+
+        ' 並べる順番：TopMost → RemindTime → id
+        Dim sorted = rows.
+        OrderByDescending(Function(r) CBool(r("TopMostFlag"))).
+        ThenBy(Function(r) GetRemindTime(r)).
+        ThenBy(Function(r) r("id").ToString())
+
+        '===========================================================
+        ' ★ 縦方向に整列（画面外に出ないよう補正）
+        '===========================================================
+        For Each row In sorted
+
+            Dim memoId As String = row("id").ToString()
+            If memoForms.ContainsKey(memoId) Then
+                Dim mf As MemoForm = memoForms(memoId)
+                mf.RefreshUI()
+                Dim offsetY As Integer = mf.Height + 6
+                ' 新しい位置
+                Dim newX As Integer = startPoint.X
+                Dim newY As Integer = currentY
+
+                ' 画面外に出ないよう補正
+                If newX < minX Then newX = minX + 10
+                If newX > maxX - mf.Width Then newX = maxX - mf.Width
+
+                If newY < minY Then newY = minY + 10
+                If newY > maxY - mf.Height Then newY = maxY - mf.Height
+
+                ' UI 位置変更
+                mf.Location = New Point(newX, newY)
+
+                ' DataRow 位置更新
+                row("x") = newX
+                row("y") = newY
+
+                currentY += offsetY
+            End If
+        Next
+
+        mainData.AcceptChanges()
+        Save()
+    End Sub
+
+    Public Sub SortAllMemos(startPoint As Point)
+
+        Dim currentY As Integer = startPoint.Y
+
+        ' 全ディスプレイ結合領域
+        Dim allScreens = Screen.AllScreens
+        Dim minX As Integer = allScreens.Min(Function(s) s.WorkingArea.Left)
+        Dim maxX As Integer = allScreens.Max(Function(s) s.WorkingArea.Right)
+        Dim minY As Integer = allScreens.Min(Function(s) s.WorkingArea.Top)
+        Dim maxY As Integer = allScreens.Max(Function(s) s.WorkingArea.Bottom)
+
+        ' VisibleFlag=True の全メモ
+        Dim rows = mainData.Rows.Cast(Of DataRow)().
+        Where(Function(r) CBool(r("VisibleFlag")))
+
+        ' 並べる順番：TopMost → RemindTime → 色 → id
+        Dim sorted = rows.
+        OrderByDescending(Function(r) CBool(r("TopMostFlag"))).
+        ThenBy(Function(r) GetRemindTime(r)).
+        ThenBy(Function(r) CInt(r("MemoColor"))).
+        ThenBy(Function(r) r("id").ToString())
+
+        For Each row In sorted
+
+            Dim memoId As String = row("id").ToString()
+
+            If memoForms.ContainsKey(memoId) Then
+
+                Dim mf As MemoForm = memoForms(memoId)
+                mf.RefreshUI()
+                Dim offsetY As Integer = mf.Height + 6
+
+                Dim newX As Integer = startPoint.X
+                Dim newY As Integer = currentY
+
+                ' 画面外補正
+                If newX < minX Then newX = minX + 10
+                If newX > maxX - mf.Width Then newX = maxX - mf.Width
+
+                If newY < minY Then newY = minY + 10
+                If newY > maxY - mf.Height Then newY = maxY - mf.Height
+
+                mf.Location = New Point(newX, newY)
+
+                row("x") = newX
+                row("y") = newY
+
+                currentY += offsetY
+            End If
+        Next
+
+        mainData.AcceptChanges()
+        Save()
+    End Sub
+
+
+
+    '===========================================================
+    ' ★ GetRemindTime：RemindTime の比較用値を取得
+    '   - RemindTime が未設定（DBNull）の場合は DateTime.MaxValue を返す
+    '   - 並べ替え処理（SortMemosByColor）で「期限なし」を最後に回すための補助関数
+    '   - 設定されている場合は実際の RemindTime を返す
+    '===========================================================
+    Private Function GetRemindTime(row As DataRow) As DateTime
+
+        If IsDBNull(row("RemindTime")) Then
+            Return DateTime.MaxValue
+        Else
+            Return CType(row("RemindTime"), DateTime)
+        End If
+    End Function
+
+
+    '===========================================================
+    ' ★ MoveMemosByColor：色ごとにまとめて移動
+    '   - 既存の並びを保ったまま全体を移動
+    '===========================================================
+    Public Sub MoveMemosByColor(colorIndex As Integer, startPoint As Point)
+
+        ' 対象色かつ VisibleFlag=True のメモを抽出
+        Dim rows = mainData.Rows.Cast(Of DataRow)().
+        Where(Function(r) CInt(r("MemoColor")) = colorIndex AndAlso CBool(r("VisibleFlag")))
+
+        If Not rows.Any() Then Exit Sub
+
+        ' 全ディスプレイの結合領域
+        Dim allScreens = Screen.AllScreens
+        Dim minX As Integer = allScreens.Min(Function(s) s.WorkingArea.Left)
+        Dim maxX As Integer = allScreens.Max(Function(s) s.WorkingArea.Right)
+        Dim minY As Integer = allScreens.Min(Function(s) s.WorkingArea.Top)
+        Dim maxY As Integer = allScreens.Max(Function(s) s.WorkingArea.Bottom)
+
+        ' 現在位置
+        Dim offsetY As Integer = 0
+
+        For Each row In rows
+
+            Dim memoId As String = row("id").ToString()
+
+            If memoForms.ContainsKey(memoId) Then
+
+                Dim mf As MemoForm = memoForms(memoId)
+                mf.RefreshUI()
+                Dim newX As Integer = startPoint.X
+                Dim newY As Integer = startPoint.Y + offsetY
+
+                ' 画面外補正
+                If newX < minX Then newX = minX + 10
+                If newX > maxX - mf.Width Then newX = maxX - mf.Width
+
+                If newY < minY Then newY = minY + 10
+                If newY > maxY - mf.Height Then newY = maxY - mf.Height
+
+                mf.Location = New Point(newX, newY)
+
+                row("x") = newX
+                row("y") = newY
+
+                offsetY += mf.Height + 6
+            End If
+        Next
+
+        mainData.AcceptChanges()
+        Save()
+
+    End Sub
+
+
+    '===========================================================
+    ' ★ 個別メモ表示切替（辞書方式対応）
     '   - VisibleFlag を更新
-    '   - 既存フォームの Visible を変更
-    '   - 無い場合は新規生成
+    '   - 辞書方式で既存フォームを再利用
+    '   - 無い場合は新規生成して辞書に登録
     '   - 親メニュー（色）のチェック状態を再計算
     '===========================================================
     Private Sub ShowSingleMemo_Click(sender As Object, e As EventArgs)
@@ -534,28 +935,26 @@ Public Class DataViewForm
         ' チェック状態を反転
         item.Checked = Not item.Checked
 
-        ' mainData の VisibleFlag を更新
+        ' DataRow 更新
         Dim row = mainData.Rows.Cast(Of DataRow)().
         First(Function(r) r("id").ToString() = memoId)
 
         row("VisibleFlag") = item.Checked
 
-        ' フォーム存在チェック
-        Dim exists = Application.OpenForms.Cast(Of Form).
-        Any(Function(f) TypeOf f Is MemoForm AndAlso CType(f, MemoForm).MyRow Is row)
+        ' 辞書方式でフォーム更新
+        If memoForms.ContainsKey(memoId) Then
 
-        If exists Then
-            ' 既存フォームの表示状態を変更
-            Dim mf = Application.OpenForms.Cast(Of Form).
-            First(Function(f) TypeOf f Is MemoForm AndAlso CType(f, MemoForm).MyRow Is row)
-            mf.Visible = item.Checked
+            Dim mf = memoForms(memoId)
+
+            If item.Checked Then
+                mf.Visible = True
+            Else
+                mf.Close()
+            End If
 
         ElseIf item.Checked Then
-            ' 非表示 → 表示に変更された場合は新規生成
-            MemoBuild(mainData.Rows.IndexOf(row))
+            MemoBuild(row)
         End If
-
-        CloseAllMenus()
 
         ' 親メニュー（色）のチェック状態を再計算
         Dim parentItem = CType(item.OwnerItem, ToolStripMenuItem)
@@ -572,11 +971,110 @@ Public Class DataViewForm
     End Sub
 
 
+
+
     '===========================================================
     ' ★ 表示メニュー再構築（外部から呼び出し）
     '===========================================================
     Public Sub RebuildShowCheckMenu()
         BuildShowCheckMenu()
+    End Sub
+
+
+
+    '===========================================================
+    ' ★ 表示メニュー再構築（新規カラー作成時。これも含めるように）
+    '===========================================================
+    Public Sub RebuildColorMenu()
+
+        Dim colorMenu As ToolStripMenuItem =
+        CType(menuLeft.Items("ColorMenu"), ToolStripMenuItem)
+
+        If colorMenu Is Nothing Then Exit Sub
+
+        colorMenu.DropDownItems.Clear()
+
+        For Each theme In ColorThemeManager.Themes
+            Dim item As New ToolStripMenuItem(theme.Name)
+            item.Tag = theme.Index
+
+            AddHandler item.Click,
+            Sub(sender As Object, e As EventArgs)
+                Dim idx As Integer = CInt(CType(sender, ToolStripMenuItem).Tag)
+                CreateNewMemo(idx)
+            End Sub
+
+            colorMenu.DropDownItems.Add(item)
+        Next
+
+    End Sub
+
+
+    '===========================================================
+    ' ★ 表示色再構築（色が変わった時。全色書き換え）
+    '===========================================================
+    Public Sub RefreshAllMemoColors()
+
+        For Each f As Form In Application.OpenForms
+            If TypeOf f Is MemoForm Then
+                Dim mf = CType(f, MemoForm)
+                Dim idx As Integer = CInt(mf.MyRow("MemoColor"))
+                Dim theme = ColorThemeManager.GetThemeByIndex(idx)
+
+                If theme IsNot Nothing Then
+                    ' ★ 背景色
+                    mf.BackColor = Color.FromArgb(theme.ColorValue)
+
+                    ' ★ フォント色（タイトルバー）
+                    mf.TitleForeColor = Color.FromArgb(theme.ForeColor)
+
+                    ' ★ ClipLabel / fileLabel / pinLabel
+                    mf.clipLabel.ForeColor = Color.FromArgb(theme.ForeColor)
+                    mf.fileLabel.ForeColor = Color.FromArgb(theme.ForeColor)
+                    mf.pinLabel.ForeColor = Color.FromArgb(theme.ForeColor)
+                    mf.hideButton.CircleBorderColor = Color.FromArgb(theme.ForeColor)
+                    mf.hideButton.Invalidate()
+
+                    ' ★ タイトルバーの再描画（必須）
+                    mf.RefreshTitle()
+                End If
+            End If
+        Next
+
+    End Sub
+
+
+    '===========================================================
+    ' ★ MemoColor の整合性チェック
+    '   - color.xml が壊れた／消えた場合に備えて
+    '   - 存在しない Index を使っている付箋は Gray(5) に退避
+    '===========================================================
+    Public Sub FixMemoColorIndexes()
+
+        If mainData Is Nothing Then Exit Sub
+
+        ' 有効なテーマの Index を取得
+        Dim validIndexes As New List(Of Integer)(
+        ColorThemeManager.Themes.Select(Function(t) t.Index)
+    )
+
+        ' 付箋データの MemoColor をチェック
+        For Each row As DataRow In mainData.Rows
+
+            If row.RowState = DataRowState.Deleted Then Continue For
+
+            Dim idx As Integer = CInt(row("MemoColor"))
+
+            ' 存在しない Index の場合は Gray(5) に退避
+            If Not validIndexes.Contains(idx) Then
+                row("MemoColor") = 5
+            End If
+
+        Next
+
+        mainData.AcceptChanges()
+        Save()
+
     End Sub
 
 
@@ -606,102 +1104,97 @@ Public Class DataViewForm
 
     End Sub
 
+    Private Sub OnSessionSwitch(sender As Object, e As Microsoft.Win32.SessionSwitchEventArgs)
+
+        If e.Reason = Microsoft.Win32.SessionSwitchReason.SessionUnlock Then
+            ' ★ ログイン完了した瞬間にリマインド再チェック
+            CheckAllReminders()
+        End If
+
+    End Sub
+
 
     '===========================================================
-    ' ★ CheckAllReminders：リマインダー（通知）チェック
-    '   - 表示中の MemoForm に対して CheckReminder() を呼び出し色更新
-    '   - 非表示メモの RemindTime を確認し、期限到達なら通知＋表示
-    '   - 通知内容は「今日」または「超過（◯日）」のみ
+    ' ★ CheckAllReminders：リマインダー（通知）チェック（辞書方式対応）
     '===========================================================
     Public Sub CheckAllReminders()
 
-        '---------------------------------------------
-        ' ★ 表示中の MemoForm の色更新（期限超過色など）
-        '---------------------------------------------
-        For Each f As Form In Application.OpenForms
-            If TypeOf f Is MemoForm Then
-                CType(f, MemoForm).CheckReminder()
-            End If
+        '-----------------------------------------------------------
+        ' ★ 表示中の MemoForm の色更新（辞書方式）
+        '-----------------------------------------------------------
+        For Each kv In memoForms
+            Dim mf As MemoForm = kv.Value
+            mf.CheckReminder()
         Next
 
-        '---------------------------------------------
-        ' ★ 非表示メモの期限チェック
-        '---------------------------------------------
+        '-----------------------------------------------------------
+        ' ★ 非表示メモの期限チェック（まとめて通知）
+        '-----------------------------------------------------------
+        Dim notifyList As New List(Of String)
+
         For Each row As DataRow In mainData.Rows
 
-            ' RemindTime が未設定ならスキップ
             If IsDBNull(row("RemindTime")) Then Continue For
 
             Dim remindTime As DateTime = CType(row("RemindTime"), DateTime)
-
-            ' まだ通知日になっていない場合はスキップ
             If DateTime.Now < remindTime Then Continue For
 
             '---------------------------------------------
-            ' ★ 日数計算（今日 or 超過のみ）
+            ' ★ 日数計算
             '---------------------------------------------
             Dim daysDiff As Integer = (remindTime.Date - DateTime.Now.Date).Days
-            Dim status As String
+            Dim status As String =
+            If(daysDiff = 0, "今日", $"超過（{Math.Abs(daysDiff)} 日）")
 
-            If daysDiff = 0 Then
-                status = "今日"
-            Else
-                status = $"超過（{Math.Abs(daysDiff)} 日）"
-            End If
+            notifyList.Add($"{row("title")}（{status}）")
 
             '---------------------------------------------
-            ' ★ バルーン通知（NotifyIcon）
-            '---------------------------------------------
-            NotifyIcon1.BalloonTipTitle = $"通知：{remindTime:yyyy/MM/dd}"
-            NotifyIcon1.BalloonTipText = $"{row("title")}（{status}）"
-            NotifyIcon1.ShowBalloonTip(4000)
-
-            '---------------------------------------------
-            ' ★ メモを表示状態にする（強制表示）
+            ' ★ メモを表示状態にする
             '---------------------------------------------
             row("VisibleFlag") = True
             row("TopMostFlag") = True
             mainData.AcceptChanges()
 
-            '---------------------------------------------
-            ' ★ 既存フォームがあるかチェック
-            '---------------------------------------------
-            Dim exists = False
-
-            For Each f As Form In Application.OpenForms
-                If TypeOf f Is MemoForm Then
-                    Dim mf = CType(f, MemoForm)
-                    If mf.MyRow Is row Then
-                        exists = True
-                        mf.TopMost = True
-                        mf.pinLabel.Text = "📌"   ' ピン表示
-                        Exit For
-                    End If
-                End If
-            Next
+            Dim memoId As String = row("id").ToString()
+            Dim targetForm As MemoForm = Nothing
 
             '---------------------------------------------
-            ' ★ フォームが無ければ新規生成
+            ' ★ 辞書方式で既存フォームを探す
             '---------------------------------------------
-            If Not exists Then
-                MemoBuild(mainData.Rows.IndexOf(row))
+            If memoForms.ContainsKey(memoId) Then
+                targetForm = memoForms(memoId)
             End If
 
-            ' 表示メニュー更新
-            RebuildShowCheckMenu()
-            RecalculateColorMenuCheckState(CInt(row("MemoColor")))
+            If targetForm Is Nothing Then
+                targetForm = MemoBuild(row)
+            End If
+
+            '---------------------------------------------
+            ' ★ リマインダー状態を再チェック
+            '---------------------------------------------
+            If targetForm IsNot Nothing Then
+                targetForm.CheckReminder()
+                targetForm.TopMost = True
+                targetForm.pinLabel.Text = "📌"
+            End If
+
         Next
 
+        '-----------------------------------------------------------
+        ' ★ 表示メニュー更新
+        '-----------------------------------------------------------
+        BuildShowCheckMenu()
+
+        '-----------------------------------------------------------
+        ' ★ まとめて通知
+        '-----------------------------------------------------------
+        If notifyList.Count > 0 Then
+            NotifyIcon1.BalloonTipTitle = $"期限超過通知（{notifyList.Count} 件）"
+            NotifyIcon1.BalloonTipText = String.Join(vbCrLf, notifyList)
+            NotifyIcon1.ShowBalloonTip(4000)
+        End If
+
     End Sub
-
-
-    '===========================================================
-    ' ★ Timer1_Tick：3時間ごとにリマインダーをチェック
-    '===========================================================
-    Private Sub Timer1_Tick(sender As Object, e As EventArgs) Handles Timer1.Tick
-        CheckAllReminders()
-    End Sub
-
 
     '===========================================================
     ' ★ 終了メニュー：データ保存してアプリ終了
@@ -712,12 +1205,8 @@ Public Class DataViewForm
     End Sub
 
 
-
     '===========================================================
-    ' ★ 並べ直し：全メモを画面左上から整列させる
-    '   - 保存されていた位置はクリアされる
-    '   - 表示中のメモ → 位置変更
-    '   - 非表示メモ → 新規生成して位置変更
+    ' ★ 並べ直し：全メモを画面左上から整列させる（辞書方式対応）
     '===========================================================
     Private Sub 並べ直しToolStripMenuItem_Click(sender As Object, e As EventArgs)
 
@@ -727,65 +1216,76 @@ Public Class DataViewForm
         MessageBoxButtons.YesNo,
         MessageBoxIcon.Warning
     )
-
         If result <> DialogResult.Yes Then Return
 
-        ' 全メモを強制表示＋折りたたみ状態にする
+        '-----------------------------------------------------------
+        ' ★ 全メモを強制表示＋折りたたみ
+        '-----------------------------------------------------------
         For Each row As DataRow In mainData.Rows
             row("VisibleFlag") = True
             row("CollapsedFlag") = True
         Next
-
         mainData.AcceptChanges()
-        RebuildShowCheckMenu()
+        BuildShowCheckMenu()
 
-        ' 整列開始位置
-        Dim posX = 50
-        Dim posY = 50
-        Dim offset = 18
-        Dim maxY = Screen.PrimaryScreen.WorkingArea.Height - 50
+        '-----------------------------------------------------------
+        ' ★ 全ディスプレイの結合領域を取得
+        '-----------------------------------------------------------
+        Dim allScreens = Screen.AllScreens
 
-        '---------------------------------------------
-        ' ★ 表示中の MemoForm を並べ直す
-        '---------------------------------------------
-        For Each f As Form In Application.OpenForms
-            If TypeOf f Is MemoForm Then
-                Dim mf = CType(f, MemoForm)
+        Dim minX As Integer = allScreens.Min(Function(s) s.WorkingArea.Left)
+        Dim maxX As Integer = allScreens.Max(Function(s) s.WorkingArea.Right)
+        Dim minY As Integer = allScreens.Min(Function(s) s.WorkingArea.Top)
+        Dim maxY As Integer = allScreens.Max(Function(s) s.WorkingArea.Bottom)
 
-                ' 画面下に到達したら右にずらす
-                If posY + mf.Height > maxY Then
-                    posX += 305
-                    posY = 50
-                End If
+        Dim posX As Integer = minX + 50
+        Dim posY As Integer = minY + 50
+        Dim offset As Integer = 18
 
-                mf.Left = posX
-                mf.Top = posY
+        '-----------------------------------------------------------
+        ' ★ 辞書方式：表示中の MemoForm を並べ直す
+        '-----------------------------------------------------------
+        For Each kv In memoForms
+            Dim mf As MemoForm = kv.Value
 
-                mf.MyRow("x") = posX
-                mf.MyRow("y") = posY
+            Dim memoHeight As Integer =
+            If(CBool(mf.MyRow("CollapsedFlag")),
+               mf.TitleHeight,
+               mf.OriginalHeight)
 
-                posY += offset
+            If posY + memoHeight > maxY - 50 Then
+                posX += 305
+                posY = minY + 50
             End If
+
+            mf.Left = posX
+            mf.Top = posY
+
+            mf.MyRow("x") = posX
+            mf.MyRow("y") = posY
+
+            posY += memoHeight + 4
         Next
 
-        '---------------------------------------------
-        ' ★ 非表示メモを生成して並べ直す
-        '---------------------------------------------
+        '-----------------------------------------------------------
+        ' ★ 非表示だったメモを生成して並べ直す（辞書方式）
+        '-----------------------------------------------------------
         For Each row As DataRow In mainData.Rows
 
-            Dim exists = Application.OpenForms.Cast(Of Form).
-            Any(Function(f) TypeOf f Is MemoForm AndAlso CType(f, MemoForm).MyRow Is row)
+            Dim memoId As String = row("id").ToString()
 
-            If Not exists Then
-                ' 新規生成
-                MemoBuild(mainData.Rows.IndexOf(row))
+            If Not memoForms.ContainsKey(memoId) Then
 
-                Dim mf = Application.OpenForms.Cast(Of Form).
-                First(Function(f) TypeOf f Is MemoForm AndAlso CType(f, MemoForm).MyRow Is row)
+                Dim mf As MemoForm = MemoBuild(row)
 
-                If posY + mf.Height > maxY Then
+                Dim memoHeight As Integer =
+                If(CBool(row("CollapsedFlag")),
+                   mf.TitleHeight,
+                   mf.OriginalHeight)
+
+                If posY + memoHeight > maxY - 50 Then
                     posX += 305
-                    posY = 50
+                    posY = minY + 50
                 End If
 
                 mf.Left = posX
@@ -794,13 +1294,15 @@ Public Class DataViewForm
                 row("x") = posX
                 row("y") = posY
 
-                posY += offset
+                posY += memoHeight + 4
             End If
         Next
 
         mainData.AcceptChanges()
         Save()
+
     End Sub
+
 
 
     '===========================================================
@@ -862,6 +1364,7 @@ Public Class DataViewForm
         Dim elem = doc.Root.Element(key)
         If elem Is Nothing Then Return ""
         Return elem.Value
+
     End Function
 
 
@@ -917,5 +1420,447 @@ Public Class DataViewForm
     Public Function GetFileAttachMode() As String
         Return FileAttachMode
     End Function
+
+    '===========================================================
+    ' ★ 付箋サイズの設定
+    '===========================================================
+
+
+    Public Sub SetMemoSizeMode(mode As String)
+        SaveSetting("MemoSizeMode", mode)
+        RedrawAllMemos()
+    End Sub
+
+    Public Function GetMemoSizeMode() As String
+        Dim v As String = LoadSetting("MemoSizeMode")
+        If String.IsNullOrWhiteSpace(v) Then
+            Return "Default"
+        End If
+        Return v
+    End Function
+
+
+    '===========================================================
+    ' ★ サイズ設定を読みだしてまとめてMemoFormに渡す。
+    '===========================================================
+    Public Function GetMemoSizeProfile() As MemoSizeProfile
+
+        Dim mode As String = LoadSetting("MemoSizeMode")
+        If String.IsNullOrWhiteSpace(mode) Then mode = "Default"
+
+        Dim p As New MemoSizeProfile()
+
+        Select Case mode
+            Case "Large"
+                p.Width = 340
+                p.TitleHeight = 21
+                p.OriginalHeight = 260
+                p.TitleFont = New Font("Segoe UI", 11, FontStyle.Bold)
+                p.MemoFont = New Font("Segoe UI", 11)
+
+                ' ★ Large
+                p.IconSize = 18
+                p.IconFontSize = 10
+                p.IconRightMargin = 4
+                p.IconSpacing = 2
+
+                p.HideButtonLeft = 2
+                p.HideButtonTop = 1
+
+                p.TitleTextBoxLeft = 4
+                p.TitleTextBoxTop = 22
+                p.TitleTextBoxWidth = 332
+                p.MemoTextBoxHeight = 175
+
+                p.RemindLabelOffsetX = -26
+                p.RemindLabelOffsetY = 5
+                p.RemindLabelFontSize = 10
+
+                p.FileLabelOffsetX = -88
+                p.FileLabelOffsetY = 5
+                p.FileLabelWidth = 90
+                p.FileLabelFontSize = 10
+
+                p.ActionButtonSize = 26
+                p.ActionButtonEmojiFontSize = 10
+
+                p.UrlButtonLeft = 310
+                p.UrlButtonTop = 23
+                p.RemindButtonLeft = 4
+                p.RemindButtonTop = 230
+                p.DeleteButtonLeft = 310
+                p.DeleteButtonTop = 230
+
+            Case "XLarge"
+                p.Width = 380
+                p.TitleHeight = 24
+                p.OriginalHeight = 300
+                p.TitleFont = New Font("Segoe UI", 13, FontStyle.Bold)
+                p.MemoFont = New Font("Segoe UI", 13)
+
+                ' ★ Default の “現在の COPiPi のデフォルト値”
+                p.IconSize = 20
+                p.IconFontSize = 12
+                p.IconRightMargin = 4
+                p.IconSpacing = 2
+
+                p.HideButtonLeft = 2
+                p.HideButtonTop = 1
+
+                p.TitleTextBoxLeft = 4
+                p.TitleTextBoxTop = 26
+                p.TitleTextBoxWidth = 372
+                p.MemoTextBoxHeight = 204
+
+                p.RemindLabelOffsetX = -30
+                p.RemindLabelOffsetY = 5
+                p.RemindLabelFontSize = 12
+
+                p.FileLabelOffsetX = -90
+                p.FileLabelOffsetY = 4
+                p.FileLabelWidth = 90
+                p.FileLabelFontSize = 12
+
+                p.ActionButtonSize = 30
+                p.ActionButtonEmojiFontSize = 12
+
+                p.UrlButtonLeft = 345
+                p.UrlButtonTop = 26
+                p.RemindButtonLeft = 4
+                p.RemindButtonTop = 268
+                p.DeleteButtonLeft = 345
+                p.DeleteButtonTop = 268
+
+            Case Else ' Default
+                p.Width = 300
+                p.TitleHeight = 16
+                p.OriginalHeight = 206
+                p.TitleFont = New Font("Segoe UI", 8, FontStyle.Bold)
+                p.MemoFont = New Font("Segoe UI", 9)
+
+                ' ★ Default の “現在の COPiPi のデフォルト値”
+                p.IconSize = 14
+                p.IconFontSize = 8
+                p.IconRightMargin = 4
+                p.IconSpacing = 2
+
+                p.HideButtonLeft = 2
+                p.HideButtonTop = 1
+
+                p.TitleTextBoxLeft = 4
+                p.TitleTextBoxTop = 19
+                p.TitleTextBoxWidth = 292
+                p.MemoTextBoxHeight = 130
+
+                p.RemindLabelOffsetX = -21
+                p.RemindLabelOffsetY = 5
+                p.RemindLabelFontSize = 8
+
+                p.FileLabelOffsetX = -88
+                p.FileLabelOffsetY = 5
+                p.FileLabelWidth = 90
+                p.FileLabelFontSize = 8
+
+                p.ActionButtonSize = 23
+                p.ActionButtonEmojiFontSize = 9
+
+                p.UrlButtonLeft = 273
+                p.UrlButtonTop = 19
+                p.RemindButtonLeft = 4
+                p.RemindButtonTop = 180
+                p.DeleteButtonLeft = 273
+                p.DeleteButtonTop = 180
+        End Select
+        Return p
+    End Function
+
+
+    '===========================================================
+    ' ★ RedrawAllMemos：全 MemoForm の UI を再適用・再描画
+    '   - 現在の MemoSizeProfile を取得し、各 MemoForm に再適用
+    '   - 折りたたみ／展開状態に応じて高さを再設定（最重要）
+    '   - RemindLabel の内容・位置を再読み込み
+    '   - CheckReminder() により期限状態の色（CircleButton／RemindLabel）を更新
+    '   - Invalidate() でタイトルバー含む全体を再描画
+    '===========================================================
+    Public Sub RedrawAllMemos()
+
+
+        Dim p As MemoSizeProfile = GetMemoSizeProfile()
+
+        For Each f As Form In Application.OpenForms
+            If TypeOf f Is MemoForm Then
+                Dim mf As MemoForm = CType(f, MemoForm)
+
+                ' サイズ・位置・フォントなどを再適用
+                mf.ApplySizeProfile(p)
+
+                ' ★ 折りたたみ／展開の高さを再適用（最重要）
+                If CBool(mf.MyRow("CollapsedFlag")) Then
+                    mf.Height = mf.TitleHeight
+                Else
+                    mf.Height = mf.OriginalHeight
+                End If
+
+                ' RemindLabel の内容と位置を再適用
+                mf.LoadRemindLabel()
+
+                ' 期限状態の色を再適用
+                mf.CheckReminder()
+
+                ' 再描画
+                mf.Invalidate()
+            End If
+        Next
+
+    End Sub
+
+    '===========================================================
+    ' ★ OpenMemoNearSearchForm：検索フォームの近くに付箋を表示
+    '   - 単体でも複数でも縦に並べて表示
+    '   - 既に開いている付箋は再生成せず位置だけ調整
+    '===========================================================
+    Public Sub OpenMemoNearSearchForm(memoIds As List(Of String), searchForm As Form)
+
+        If memoIds Is Nothing OrElse memoIds.Count = 0 Then Exit Sub
+
+        Dim baseX As Integer = searchForm.Left + searchForm.Width + 10
+        Dim baseY As Integer = searchForm.Top
+
+        Dim offsetY As Integer = 0
+
+        For Each memoId In memoIds
+
+            Dim mf As MemoForm = OpenMemo(memoId)
+
+            ' ★ UI を最新化（折りたたみ状態を反映）
+            mf.RefreshUI()
+
+            ' ★ 予定位置
+            Dim newX As Integer = baseX
+            Dim newY As Integer = baseY + offsetY
+
+            ' ★ 呼び出し対象だけで重なり判定する
+            Dim safePos As Point = FindSafePositionForSearchForm(newX, newY, mf, memoIds)
+
+            mf.Left = safePos.X
+            mf.Top = safePos.Y
+
+            ' ★ DataTable の位置更新
+            Dim row = mainData.Rows.Cast(Of DataRow)().
+            First(Function(r) r("id").ToString() = memoId)
+
+            row("x") = safePos.X
+            row("y") = safePos.Y
+
+            ' ★ 非表示だったものを呼び出したら VisibleFlag=True
+            row("VisibleFlag") = True
+
+            ' ★ 次の付箋の Y を実際の高さでずらす
+            offsetY += mf.Height + 6
+        Next
+
+        Save()
+    End Sub
+
+
+    Private Function FindSafePositionForSearchForm(startX As Integer, startY As Integer, mf As MemoForm, ids As List(Of String)) As Point
+
+        Dim x As Integer = startX
+        Dim y As Integer = startY
+
+        While True
+
+            Dim overlap = memoForms.Values.Any(Function(other)
+
+                                                   ' ★ 自分自身は除外
+                                                   If other Is mf Then Return False
+
+                                                   ' ★ 呼び出し対象以外は重なり判定に使わない
+                                                   If Not ids.Contains(other.MyRow("id").ToString()) Then Return False
+
+                                                   Dim rect1 As New Rectangle(x, y, mf.Width, mf.Height)
+                                                   Dim rect2 As New Rectangle(other.Left, other.Top, other.Width, other.Height)
+                                                   Return rect1.IntersectsWith(rect2)
+                                               End Function)
+
+            If Not overlap Then
+                Return New Point(x, y)
+            End If
+
+            ' ★ 実際の高さでずらす（展開／折りたたみ対応）
+            y += mf.Height + 6
+        End While
+
+    End Function
+
+
+
+    '===========================================================
+    ' ★ DeleteMemoList：複数メモ削除（辞書方式）
+    '   - memoIds の一覧を受け取り、フォーム＋データ＋XML を同期削除
+    '===========================================================
+    Public Sub DeleteMemoList(memoIds As List(Of String))
+
+        For Each memoId In memoIds
+
+            ' ★ 表示中なら閉じる（辞書方式）
+            If memoForms.ContainsKey(memoId) Then
+                Dim mf = memoForms(memoId)
+                mf.Close()
+            End If
+
+            ' ★ DataTable から削除
+            Dim row = mainData.Rows.Cast(Of DataRow)().
+            FirstOrDefault(Function(r) r("id").ToString() = memoId)
+
+            If row IsNot Nothing Then
+                mainData.Rows.Remove(row)
+            End If
+        Next
+
+        ' ★ XML 保存
+        mainData.WriteXml(dataFilename)
+
+        ' ★ 表示メニュー更新
+        BuildShowCheckMenu()
+    End Sub
+
+    '===========================================================
+    ' ★ RemoveMemoForm：辞書から MemoForm を安全に削除する
+    '===========================================================
+    Public Sub RemoveMemoForm(memoId As String)
+
+        If String.IsNullOrEmpty(memoId) Then Exit Sub
+
+        If memoForms.ContainsKey(memoId) Then
+            memoForms.Remove(memoId)
+        End If
+
+    End Sub
+
+    '===========================================================
+    ' ★ SetMemoVisibility：複数メモの表示／非表示を一括更新
+    '===========================================================
+    Public Sub SetMemoVisibility(memoIds As List(Of String), visible As Boolean)
+
+        For Each memoId In memoIds
+
+            ' ★ DataRow を取得
+            Dim row = mainData.Rows.Cast(Of DataRow)().
+            FirstOrDefault(Function(r) r("id").ToString() = memoId)
+
+            If row Is Nothing Then Continue For
+
+            ' ★ VisibleFlag を更新
+            row("VisibleFlag") = visible
+
+            ' ★ 表示 → 非表示
+            If Not visible Then
+                If memoForms.ContainsKey(memoId) Then
+                    memoForms(memoId).Close()
+                End If
+
+            Else
+                If Not memoForms.ContainsKey(memoId) Then
+                    MemoBuild(row)
+                End If
+            End If
+        Next
+
+        ' ★ XML 保存
+        mainData.WriteXml(dataFilename)
+
+        ' ★ 表示／非表示メニュー更新
+        BuildShowCheckMenu()
+    End Sub
+
+    '===========================================================
+    ' ★ SetMemoTopMost：複数メモの最前面設定を一括更新
+    '===========================================================
+    Public Sub SetMemoTopMost(memoIds As List(Of String), topMost As Boolean)
+
+        For Each memoId In memoIds
+
+            ' ★ DataRow を更新
+            Dim row = mainData.Rows.Cast(Of DataRow)().
+                FirstOrDefault(Function(r) r("id").ToString() = memoId)
+
+            If row Is Nothing Then Continue For
+
+            row("TopMostFlag") = topMost
+
+            ' ★ 表示中なら MemoForm を更新
+            If memoForms.ContainsKey(memoId) Then
+                Dim mf = memoForms(memoId)
+                mf.TopMost = topMost
+                mf.UpdatePinLabel()
+            End If
+        Next
+
+        ' ★ XML 保存（必ず呼ぶ）
+        Save()
+
+        ' ★ 表示メニュー更新
+        BuildShowCheckMenu()
+    End Sub
+
+
+
+End Class
+
+
+'===========================================================
+' ★ MemoSizeProfile：付箋 UI のサイズ・位置・フォント設定を一括管理
+'   - MemoForm のレイアウトをテーマ／サイズモードごとに切り替えるための構造体
+'   - 本体サイズ、タイトル高さ、フォント、アイコン位置など全 UI 要素を保持
+'   - ApplySizeProfile() で MemoForm に適用され、折りたたみ／展開にも対応
+'===========================================================
+Public Class MemoSizeProfile
+
+    ' 既存
+    Public Width As Integer
+    Public TitleHeight As Integer
+    Public OriginalHeight As Integer
+    Public TitleFont As Font
+    Public MemoFont As Font
+
+    ' アイコン系
+    Public IconSize As Integer
+    Public IconFontSize As Integer
+    Public IconRightMargin As Integer
+    Public IconSpacing As Integer
+
+    ' hideButton
+    Public HideButtonLeft As Integer
+    Public HideButtonTop As Integer
+
+    ' TitleTextBox
+    Public TitleTextBoxLeft As Integer
+    Public TitleTextBoxTop As Integer
+    Public TitleTextBoxWidth As Integer
+
+    Public MemoTextBoxHeight As Integer
+
+    ' ★ RemindLabel（通知ラベル）
+    Public RemindLabelOffsetX As Integer   ' RemindButton からの距離（左方向）
+    Public RemindLabelOffsetY As Integer   ' RemindButton からの距離（上下）
+    Public RemindLabelFontSize As Integer
+
+    ' ★ FileLabel（添付ファイル名）を MemoDelete からのオフセットで管理
+    Public FileLabelOffsetX As Integer     ' MemoDelete からの距離（右方向）
+    Public FileLabelOffsetY As Integer     ' MemoDelete からの距離（上下）
+    Public FileLabelWidth As Integer
+    Public FileLabelFontSize As Integer
+
+    ' ★ ActionButton（web / remind / delete）共通サイズ
+    Public ActionButtonSize As Integer
+    Public ActionButtonEmojiFontSize As Integer
+    Public UrlButtonLeft As Integer
+    Public UrlButtonTop As Integer
+    Public RemindButtonLeft As Integer
+    Public RemindButtonTop As Integer
+    Public DeleteButtonLeft As Integer
+    Public DeleteButtonTop As Integer
 
 End Class

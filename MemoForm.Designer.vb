@@ -1,9 +1,9 @@
-﻿<Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()> _
+﻿<Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class MemoForm
     Inherits System.Windows.Forms.Form
 
     'フォームがコンポーネントの一覧をクリーンアップするために dispose をオーバーライドします。
-    <System.Diagnostics.DebuggerNonUserCode()> _
+    <System.Diagnostics.DebuggerNonUserCode()>
     Protected Overrides Sub Dispose(ByVal disposing As Boolean)
         Try
             If disposing AndAlso components IsNot Nothing Then
@@ -20,107 +20,91 @@ Partial Class MemoForm
     'メモ: 以下のプロシージャは Windows フォーム デザイナーで必要です。
     'Windows フォーム デザイナーを使用して変更できます。  
     'コード エディターを使って変更しないでください。
-    <System.Diagnostics.DebuggerStepThrough()> _
+    <System.Diagnostics.DebuggerStepThrough()>
     Private Sub InitializeComponent()
-        TitleText = New TextBox()
-        Label2 = New Label()
-        MemoText = New TextBox()
-        IDLabel = New Label()
-        PrintDocument1 = New Printing.PrintDocument()
-        remindButton = New Button()
-        MemoDelete = New Button()
-        urlButton = New Button()
-        SuspendLayout()
-        ' 
-        ' TitleText
-        ' 
-        TitleText.Location = New Point(4, 19)
-        TitleText.Name = "TitleText"
-        TitleText.RightToLeft = RightToLeft.No
-        TitleText.Size = New Size(292, 23)
-        TitleText.TabIndex = 1
-        ' 
-        ' Label2
-        ' 
-        Label2.AutoSize = True
-        Label2.Location = New Point(13, 43)
-        Label2.Name = "Label2"
-        Label2.Size = New Size(0, 15)
-        Label2.TabIndex = 2
-        ' 
-        ' MemoText
-        ' 
-        MemoText.AllowDrop = True
-        MemoText.Location = New Point(4, 48)
-        MemoText.Multiline = True
-        MemoText.Name = "MemoText"
-        MemoText.RightToLeft = RightToLeft.No
-        MemoText.Size = New Size(292, 130)
-        MemoText.TabIndex = 3
-        ' 
-        ' IDLabel
-        ' 
-        IDLabel.AutoSize = True
-        IDLabel.Location = New Point(13, 26)
-        IDLabel.Name = "IDLabel"
-        IDLabel.Size = New Size(41, 15)
-        IDLabel.TabIndex = 4
-        IDLabel.Text = "Label1"
-        ' 
-        ' remindButton
-        ' 
-        remindButton.Font = New Font("Segoe UI Emoji", 9F, FontStyle.Regular, GraphicsUnit.Point, CByte(0))
-        remindButton.Location = New Point(4, 180)
-        remindButton.Name = "remindButton"
-        remindButton.Size = New Size(23, 23)
-        remindButton.TabIndex = 5
-        remindButton.Text = "⏰"
-        remindButton.UseVisualStyleBackColor = True
-        ' 
-        ' MemoDelete
-        ' 
-        MemoDelete.Location = New Point(273, 180)
-        MemoDelete.Name = "MemoDelete"
-        MemoDelete.Size = New Size(23, 23)
-        MemoDelete.TabIndex = 6
-        MemoDelete.Text = "🗑️"
-        MemoDelete.UseVisualStyleBackColor = True
-        ' 
-        ' urlButton
-        ' 
-        urlButton.Location = New Point(273, 19)
-        urlButton.Name = "urlButton"
-        urlButton.Size = New Size(23, 23)
-        urlButton.TabIndex = 7
-        urlButton.Text = "🌎"
-        urlButton.UseVisualStyleBackColor = True
-        ' 
-        ' MemoForm
-        ' 
-        AutoScaleDimensions = New SizeF(7F, 15F)
-        AutoScaleMode = AutoScaleMode.Font
-        ClientSize = New Size(300, 206)
-        Controls.Add(urlButton)
-        Controls.Add(MemoDelete)
-        Controls.Add(remindButton)
-        Controls.Add(MemoText)
-        Controls.Add(Label2)
-        Controls.Add(TitleText)
-        Controls.Add(IDLabel)
-        FormBorderStyle = FormBorderStyle.None
-        Name = "MemoForm"
-        RightToLeft = RightToLeft.Yes
-        ShowInTaskbar = False
-        Text = "MemoForm"
-        ResumeLayout(False)
-        PerformLayout()
+        Dim resources As System.ComponentModel.ComponentResourceManager = New System.ComponentModel.ComponentResourceManager(GetType(MemoForm))
+        Me.TitleText = New System.Windows.Forms.TextBox()
+        Me.MemoText = New System.Windows.Forms.TextBox()
+        Me.RemindButton = New System.Windows.Forms.Button()
+        Me.MemoDelete = New System.Windows.Forms.Button()
+        Me.UrlButton = New System.Windows.Forms.Button()
+        Me.SuspendLayout()
+        '
+        'TitleText
+        '
+        Me.TitleText.Font = New System.Drawing.Font("Segoe UI", 9.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.TitleText.Location = New System.Drawing.Point(4, 19)
+        Me.TitleText.Name = "TitleText"
+        Me.TitleText.Size = New System.Drawing.Size(292, 23)
+        Me.TitleText.TabIndex = 1
+        '
+        'MemoText
+        '
+        Me.MemoText.AllowDrop = True
+        Me.MemoText.Font = New System.Drawing.Font("Segoe UI", 9.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.MemoText.Location = New System.Drawing.Point(4, 48)
+        Me.MemoText.Multiline = True
+        Me.MemoText.Name = "MemoText"
+        Me.MemoText.Size = New System.Drawing.Size(292, 130)
+        Me.MemoText.TabIndex = 2
+        '
+        'RemindButton
+        '
+        Me.RemindButton.Font = New System.Drawing.Font("Segoe UI Emoji", 9.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.RemindButton.Location = New System.Drawing.Point(4, 180)
+        Me.RemindButton.Name = "RemindButton"
+        Me.RemindButton.Size = New System.Drawing.Size(23, 23)
+        Me.RemindButton.TabIndex = 3
+        Me.RemindButton.Text = "⏰"
+        Me.RemindButton.UseVisualStyleBackColor = True
+        '
+        'MemoDelete
+        '
+        Me.MemoDelete.Location = New System.Drawing.Point(273, 180)
+        Me.MemoDelete.Name = "MemoDelete"
+        Me.MemoDelete.Size = New System.Drawing.Size(23, 23)
+        Me.MemoDelete.TabIndex = 4
+        Me.MemoDelete.Text = "🗑️"
+        Me.MemoDelete.UseVisualStyleBackColor = True
+        '
+        'UrlButton
+        '
+        Me.UrlButton.Location = New System.Drawing.Point(273, 19)
+        Me.UrlButton.Name = "UrlButton"
+        Me.UrlButton.Size = New System.Drawing.Size(23, 23)
+        Me.UrlButton.TabIndex = 5
+        Me.UrlButton.Text = "🌎"
+        Me.UrlButton.UseVisualStyleBackColor = True
+        '
+        'MemoForm
+        '
+        Me.AutoScaleDimensions = New System.Drawing.SizeF(6.0!, 12.0!)
+        Me.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font
+        Me.ClientSize = New System.Drawing.Size(300, 206)
+        Me.ControlBox = False
+        Me.Controls.Add(Me.UrlButton)
+        Me.Controls.Add(Me.MemoDelete)
+        Me.Controls.Add(Me.RemindButton)
+        Me.Controls.Add(Me.MemoText)
+        Me.Controls.Add(Me.TitleText)
+        Me.DoubleBuffered = True
+        Me.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None
+        Me.Icon = CType(resources.GetObject("$this.Icon"), System.Drawing.Icon)
+        Me.MaximizeBox = False
+        Me.MinimizeBox = False
+        Me.Name = "MemoForm"
+        Me.ShowIcon = False
+        Me.ShowInTaskbar = False
+        Me.SizeGripStyle = System.Windows.Forms.SizeGripStyle.Hide
+        Me.Text = "MemoForm"
+        Me.ResumeLayout(False)
+        Me.PerformLayout()
+
     End Sub
+
     Friend WithEvents TitleText As TextBox
-    Friend WithEvents Label2 As Label
     Friend WithEvents MemoText As TextBox
-    Friend WithEvents IDLabel As Label
-    Friend WithEvents PrintDocument1 As Printing.PrintDocument
-    Friend WithEvents remindButton As Button
+    Friend WithEvents RemindButton As Button
     Friend WithEvents MemoDelete As Button
-    Friend WithEvents urlButton As Button
+    Friend WithEvents UrlButton As Button
 End Class
