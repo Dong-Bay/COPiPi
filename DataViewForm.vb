@@ -1173,9 +1173,13 @@ Public Class DataViewForm
             ' ★ リマインダー状態を再チェック
             '---------------------------------------------
             If targetForm IsNot Nothing Then
+
+                targetForm.RefreshUI()
                 targetForm.CheckReminder()
-                targetForm.TopMost = True
-                targetForm.pinLabel.Text = "📌"
+
+                targetForm.BringToFront()
+                targetForm.Activate()
+
             End If
 
         Next
